@@ -1,0 +1,132 @@
+from pathlib import Path
+import numpy as np
+import cv2
+import time
+
+# Function to allow user to select an object in a video frame.
+def object_selection(video_path, frame_time):
+    capture = cv2.VideoCapture(video_path)
+    capture.set(cv2.CAP_PROP_POS_MSEC, frame_time)
+    ret, frame = capture.read()
+    if not ret:
+        print('Frame not captured')
+        return None
+    cv2.imshow('Select Object', frame)
+    cv2.waitKey(0)
+    x, y, w, h = cv2.selectROI(frame)
+    cv2.destroyAllWindows()
+    return (x, y, w, h)
+
+# Function to resize the given image by a specified scale amount.
+def resize_img(imgpic, scale_amt):
+    cv2.resize(imgpic, (0, 0), imgpic, scale_amt/100, scale_amt/100)
+
+# Function to match features between query image and another image.
+def match(img_query, img):
+    min_match_count = 10
+    sift = cv2.SIFT_create()
+    kp1, des1 = sift.detectAndCompute(img_query, None)
+    kp2, des2 = sift.detectAndCompute(img, None)
+    flann_index_kdtree = 1
+    index_params = dict(algorithm=flann_index_kdtree, trees=5)
+    search_params = dict(checks=50)
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    matches = flann.knnMatch(des1, des2, k=2)
+    good = [m for m, n in matches if m.distance < .5 * n.distance]
+
+    if len(good) > 10:
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        h, w, _ = img_query.shape
+        pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
+        dst = cv2.perspectiveTransform(pts, M)
+        img_polylines = cv2.polylines(img, [np.int32(dst)], True, 255, 3, cv2.LINE_AA)
+        return img_polylines
+
+# Base class for video processing.
+class VideoBase:
+    def __init__(self, query_image_path):
+        self.query_image = cv2.imread(query_image_path, cv2.IMREAD_COLOR)
+        if self.query_image is None:
+            raise Exception('Image does not exist')
+        self.video_capture = None
+        self.frame_width = 0
+        self.frame_height = 0
+        self.video_writer = None
+
+# Class for object detection in videos.
+class objectDetection(VideoBase):
+    def __init__(self, query_image_path, video_path):
+        super().__init__(query_image_path)
+        self.video_path = video_path
+        self.selection_coordinates = None
+
+    # Play the video and allow for object selection at the 2-second mark.
+    def play(self):
+        capture = cv2.VideoCapture(self.video_path)
+        paused_for_selection = False
+        while capture.isOpened():
+            ret, frame = capture.read()
+            if not ret:
+                print('cannot capture a frame')
+                continue
+            current_time = capture.get(cv2.CAP_PROP_POS_MSEC)
+            if current_time >= 2000 and not paused_for_selection:
+                self.selection_coordinates = object_selection(self.video_path, current_time)
+                paused_for_selection = True
+            if self.selection_coordinates:
+                x, y, w, h = self.selection_coordinates
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            cv2.imshow('Video with Selected Object', frame)
+            key = cv2.waitKey(50)
+            if key == ord('q'):
+                break
+        capture.release()
+        cv2.destroyAllWindows()
+
+    # Save the video with the selected object highlighted.
+    def save_video(self, output_path):
+        if self.selected_object_coordinates is None:
+            print("Please select an object first using object_selection() method.")
+            return
+        capture = cv2.VideoCapture(self.video_path)
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        out = cv2.VideoWriter(output_path, fourcc, 20.0, (int(capture.get(3)), int(capture.get(4))))
+        while capture.isOpened():
+            ret, frame = capture.read()
+            if not ret:
+                break
+            x, y, w, h = self.selected_object_coordinates
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            out.write(frame)
+        capture.release()
+        out.release()
+        cv2.destroyAllWindows()
+
+    # Capture a snapshot from the video with the selected object highlighted.
+    def take_snapshot(self, output_image_path, frame_time):
+        capture = cv2.VideoCapture(self.video_path)
+        capture.set(cv2.CAP_PROP_POS_MSEC, frame_time)
+        ret, frame = capture.read()
+        if not ret:
+            print('No frame captured')
+            return
+        if self.selected_object_coordinates:
+            x, y, w, h = self.selected_object_coordinates
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.imwrite(output_image_path, frame)
+        capture.release()
+
+# Main execution
+def main():
+    detector = objectDetection('GraduatedCylinder.jpeg', 'video.mp4')
+    detector.play()
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
